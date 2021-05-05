@@ -327,6 +327,9 @@ the Armeria client used to connect to Elasticsearch.
 The above properties allow the most common SSL setup to work out of box. If you need more
 customization, please make a comment in [this issue](https://github.com/openzipkin/zipkin/issues/2774).
 
+#### Automatic Index Creation
+Zipkin will automatically create new indices as needed. Elasticsearch by default [allows](https://www.elastic.co/guide/en/elasticsearch/reference/current/docs-index_.html#index-creation) automatic creation of said indices, though your local install may have been configured to disallow it. You can verify this in the cluster settings: `action.auto_create_index: false`.
+
 ### Legacy (v1) storage components
 The following components are no longer encouraged, but exist to help aid
 transition to supported ones. These are indicated as "v1" as they use
@@ -590,7 +593,7 @@ See [docker-zipkin](https://github.com/openzipkin/docker-zipkin) for details.
 To build and run the server from the currently checked out source, enter the following.
 ```bash
 # Build the server and also make its dependencies
-$ ./mvnw -T1C -q --batch-mode -DskipTests -Dlicense.skip=true --also-make -pl zipkin-server clean package
+$ ./mvnw -T1C -q --batch-mode -DskipTests --also-make -pl zipkin-server clean package
 # Run the server
 $ java -jar ./zipkin-server/target/zipkin-server-*exec.jar
 # or Run the slim server

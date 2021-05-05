@@ -23,19 +23,19 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.extension.AfterAllCallback;
 import org.junit.jupiter.api.extension.BeforeAllCallback;
 import org.junit.jupiter.api.extension.ExtensionContext;
-import org.rnorth.ducttape.unreliables.Unreliables;
+import org.opentest4j.TestAbortedException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.testcontainers.containers.ContainerLaunchException;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.utility.DockerImageName;
+import org.testcontainers.containers.output.Slf4jLogConsumer;
+import org.testcontainers.containers.wait.strategy.Wait;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
+import static org.testcontainers.utility.DockerImageName.parse;
 import static zipkin2.Call.propagateIfFatal;
 import static zipkin2.storage.cassandra.ITCassandraStorage.SEARCH_TABLES;
 import static zipkin2.storage.cassandra.Schema.TABLE_DEPENDENCY;
@@ -43,14 +43,9 @@ import static zipkin2.storage.cassandra.Schema.TABLE_SPAN;
 
 public class CassandraStorageExtension implements BeforeAllCallback, AfterAllCallback {
   static final Logger LOGGER = LoggerFactory.getLogger(CassandraStorageExtension.class);
-  static final int CASSANDRA_PORT = 9042;
-  final DockerImageName image;
-  CassandraContainer container;
-  CqlSession globalSession;
 
-  CassandraStorageExtension(DockerImageName image) {
-    this.image = image;
-  }
+  final CassandraContainer container = new CassandraContainer();
+  CqlSession globalSession;
 
   @Override public void beforeAll(ExtensionContext context) {
     if (context.getRequiredTestClass().getEnclosingClass() != null) {
@@ -58,28 +53,9 @@ public class CassandraStorageExtension implements BeforeAllCallback, AfterAllCal
       return;
     }
 
-    if (!"true".equals(System.getProperty("docker.skip"))) {
-      try {
-        LOGGER.info("Starting docker image " + image);
-        container = new CassandraContainer(image).withExposedPorts(CASSANDRA_PORT);
-        container.start();
-      } catch (RuntimeException e) {
-        LOGGER.warn("Couldn't start docker image " + image + ": " + e.getMessage(), e);
-      }
-    } else {
-      LOGGER.info("Skipping startup of docker " + image);
-    }
-
-    try {
-      globalSession = tryToInitializeSession(contactPoint());
-    } catch (RuntimeException | Error e) {
-      if (container == null) throw e;
-      LOGGER.warn("Couldn't connect to docker image " + image + ": " + e.getMessage(), e);
-      container.stop();
-      container = null; // try with local connection instead
-      globalSession = tryToInitializeSession(contactPoint());
-    }
+    container.start();
     LOGGER.info("Using contactPoint " + contactPoint());
+    globalSession = tryToInitializeSession(contactPoint());
   }
 
   // Builds a session without trying to use a namespace or init UDTs
@@ -106,11 +82,7 @@ public class CassandraStorageExtension implements BeforeAllCallback, AfterAllCal
   }
 
   String contactPoint() {
-    if (container != null && container.isRunning()) {
-      return container.getContainerIpAddress() + ":" + container.getMappedPort(CASSANDRA_PORT);
-    } else {
-      return "127.0.0.1:" + CASSANDRA_PORT;
-    }
+    return container.getHost() + ":" + container.getMappedPort(9042);
   }
 
   void clear(CassandraStorage storage) {
@@ -142,25 +114,6 @@ public class CassandraStorageExtension implements BeforeAllCallback, AfterAllCal
       return;
     }
     if (globalSession != null) globalSession.close();
-  }
-
-  static final class CassandraContainer extends GenericContainer<CassandraContainer> {
-    CassandraContainer(DockerImageName image) {
-      super(image);
-    }
-
-    @Override protected void waitUntilContainerStarted() {
-      Unreliables.retryUntilSuccess(120, TimeUnit.SECONDS, () -> {
-        if (!isRunning()) throw new ContainerLaunchException("Container failed to start");
-
-        String contactPoint = getContainerIpAddress() + ":" + getMappedPort(9042);
-        try (CqlSession session = tryToInitializeSession(contactPoint)) {
-          session.execute("SELECT now() FROM system.local");
-          logger().info("Obtained a connection to container ({})", contactPoint);
-          return null; // unused value
-        }
-      });
-    }
   }
 
   static void blockWhileInFlight(CassandraStorage storage) {
@@ -198,5 +151,17 @@ public class CassandraStorageExtension implements BeforeAllCallback, AfterAllCal
       if (inFlight > 0) return true;
     }
     return false;
+  }
+
+  // mostly waiting for https://github.com/testcontainers/testcontainers-java/issues/3537
+  static final class CassandraContainer extends GenericContainer<CassandraContainer> {
+    CassandraContainer() {
+      super(parse("ghcr.io/openzipkin/zipkin-cassandra:2.23.2"));
+      if ("true".equals(System.getProperty("docker.skip"))) {
+        throw new TestAbortedException("${docker.skip} == true");
+      }
+      waitStrategy = Wait.forHealthcheck();
+      withLogConsumer(new Slf4jLogConsumer(LOGGER));
+    }
   }
 }
